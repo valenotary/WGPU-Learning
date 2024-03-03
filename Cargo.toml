@@ -12,3 +12,5 @@ log = "0.4.21"
 wgpu = "0.19.2"
 pollster= "0.3.0"
 naga_oil = "0.13.0"
+bytemuck = { version = "1.14.3", features = [ "derive" ] }
+glam = {version ="0.25.0", features = ["bytemuck"]}

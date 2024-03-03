@@ -1,3 +1,4 @@
+use std::convert::Into;
 use log::{debug, error};
 use winit::{
     event::{Event, WindowEvent, KeyEvent},
@@ -5,6 +6,46 @@ use winit::{
     keyboard::{KeyCode, PhysicalKey},
     window::{Window, WindowBuilder},
 };
+use glam::{
+    f32::Vec3
+};
+use bytemuck::{
+    Pod, Zeroable,
+};
+use wgpu::util::DeviceExt;
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct Vertex {
+    position: Vec3,
+    color: Vec3,
+}
+
+impl Vertex {
+    const ATTRIBS: [wgpu::VertexAttribute; 2] = wgpu::vertex_attr_array![0=>Float32x3,1 => Float32x3];
+    fn desc() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &Self::ATTRIBS,
+        }
+    }
+}
+
+// pentagon
+const VERTICES: &[Vertex] = &[
+    Vertex { position: Vec3{x: -0.0868241, y: 0.49240386, z: 0.0}, color: Vec3{x: 0.0868241, y: 0.49240386, z: 0.5} }, // A
+    Vertex { position: Vec3{x: -0.49513406, y: 0.06958647, z: 0.0}, color: Vec3{x: 0.49513406, y: 0.06958647, z: 0.0} }, // B
+    Vertex { position: Vec3{x: -0.21918549, y: -0.44939706, z: 0.0}, color: Vec3{x: 0.21918549, y: 0.44939706, z: 0.5} }, // C
+    Vertex { position: Vec3{x: 0.35966998, y: -0.3473291, z: 0.0}, color: Vec3{x: 0.35966998, y: 0.3473291, z: 0.0} }, // D
+    Vertex { position: Vec3{x: 0.44147372, y: 0.2347359, z: 0.0}, color: Vec3{x: 0.44147372, y: 0.2347359, z: 0.5} }, // E
+];
+
+const INDICES: &[u16] = &[
+    0, 1, 4,
+    1, 2, 4,
+    2, 3, 4,
+];
 
 //TODO: refactor by pruning/renaming for more precise responsibility
 struct State<'window> {
@@ -14,6 +55,8 @@ struct State<'window> {
     config: wgpu::SurfaceConfiguration,
     size: winit::dpi::PhysicalSize<u32>,
     render_pipeline: wgpu::RenderPipeline,
+    vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
 }
 
 impl<'window> State<'window> {
@@ -81,7 +124,7 @@ impl<'window> State<'window> {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: "vs_main",
-                buffers: &[],
+                buffers: &[Vertex::desc()],
             },
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList, // every three verties correspond to one triangle
@@ -110,13 +153,31 @@ impl<'window> State<'window> {
             multiview: None,
         });
 
+        let vertex_buffer = device.create_buffer_init(
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("Vertex Buffer"),
+                contents: bytemuck::cast_slice(VERTICES),
+                usage: wgpu::BufferUsages::VERTEX,
+            }
+        );
+
+        let index_buffer = device.create_buffer_init(
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("Index Buffer"),
+                contents: bytemuck::cast_slice(INDICES),
+                usage: wgpu::BufferUsages::INDEX,
+            }
+        );
+
         Self {
             surface,
             device,
             queue,
             config,
             size,
-            render_pipeline
+            render_pipeline,
+            vertex_buffer,
+            index_buffer
         }
     }
 
@@ -175,15 +236,17 @@ impl<'window> State<'window> {
                 timestamp_writes: None,
             });
 
-            // different pipelines can get coniditionally set in set_pipeline
+            // different pipelines can get conditionally set in set_pipeline
             render_pass.set_pipeline(&self.render_pipeline);
-            render_pass.draw(0..3, 0..1);
+            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            render_pass.draw_indexed(0..((self.index_buffer.size() / (std::mem::size_of::<u16>() as u64)) as u32), 0,0..1);
         }
 
         // finish command buffer, submit to renderer
         self.queue.submit(std::iter::once(encoder.finish()));
-        output.present();
 
+        output.present();
         Ok(())
     }
 }
