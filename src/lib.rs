@@ -1,4 +1,7 @@
+mod texture;
+
 use std::convert::Into;
+use std::default::Default;
 use log::{debug, error};
 use winit::{
     event::{Event, WindowEvent, KeyEvent},
@@ -6,23 +9,23 @@ use winit::{
     keyboard::{KeyCode, PhysicalKey},
     window::{Window, WindowBuilder},
 };
-use glam::{
-    f32::Vec3
-};
+use glam::{f32::Vec3, Vec2};
 use bytemuck::{
     Pod, Zeroable,
 };
+use image::GenericImageView;
+use wgpu::{TextureDimension, TextureViewDimension};
 use wgpu::util::DeviceExt;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Vertex {
     position: Vec3,
-    color: Vec3,
+    tex_coords: Vec2
 }
 
 impl Vertex {
-    const ATTRIBS: [wgpu::VertexAttribute; 2] = wgpu::vertex_attr_array![0=>Float32x3,1 => Float32x3];
+    const ATTRIBS: [wgpu::VertexAttribute; 2] = wgpu::vertex_attr_array![0=>Float32x3,1 => Float32x2];
     fn desc() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
@@ -34,11 +37,11 @@ impl Vertex {
 
 // pentagon
 const VERTICES: &[Vertex] = &[
-    Vertex { position: Vec3{x: -0.0868241, y: 0.49240386, z: 0.0}, color: Vec3{x: 0.0868241, y: 0.49240386, z: 0.5} }, // A
-    Vertex { position: Vec3{x: -0.49513406, y: 0.06958647, z: 0.0}, color: Vec3{x: 0.49513406, y: 0.06958647, z: 0.0} }, // B
-    Vertex { position: Vec3{x: -0.21918549, y: -0.44939706, z: 0.0}, color: Vec3{x: 0.21918549, y: 0.44939706, z: 0.5} }, // C
-    Vertex { position: Vec3{x: 0.35966998, y: -0.3473291, z: 0.0}, color: Vec3{x: 0.35966998, y: 0.3473291, z: 0.0} }, // D
-    Vertex { position: Vec3{x: 0.44147372, y: 0.2347359, z: 0.0}, color: Vec3{x: 0.44147372, y: 0.2347359, z: 0.5} }, // E
+    Vertex { position: Vec3{x: -0.0868241, y: 0.49240386, z: 0.0}, tex_coords: Vec2{x: 0.4131759, y: 1.0-0.99240386} }, // A
+    Vertex { position: Vec3{x: -0.49513406, y: 0.06958647, z: 0.0}, tex_coords: Vec2{x: 0.0048659444, y: 1.0-0.56958647} }, // B
+    Vertex { position: Vec3{x: -0.21918549, y: -0.44939706, z: 0.0}, tex_coords: Vec2{x: 0.28081453, y: 1.0-0.05060294} }, // C
+    Vertex { position: Vec3{x: 0.35966998, y: -0.3473291, z: 0.0}, tex_coords: Vec2{x: 0.85967, y: 1.0-0.1526709} }, // D
+    Vertex { position: Vec3{x: 0.44147372, y: 0.2347359, z: 0.0}, tex_coords: Vec2{x: 0.9414737, y: 1.0-0.7347359} }, // E
 ];
 
 const INDICES: &[u16] = &[
@@ -57,6 +60,9 @@ struct State<'window> {
     render_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
+    diffuse_bind_group: wgpu::BindGroup,
+    // will be used in the near future
+    diffuse_texture: texture::Texture,
 }
 
 impl<'window> State<'window> {
@@ -111,10 +117,62 @@ impl<'window> State<'window> {
         };
         surface.configure(&device, &config);
 
+        let diffuse_bytes = include_bytes!("happy-tree.bdff8a19.png");
+        let diffuse_image = image::load_from_memory(diffuse_bytes).unwrap();
+        let diffuse_rgba = diffuse_image.to_rgba8();
+        let dimensions = diffuse_image.dimensions();
+        let texture_size = wgpu::Extent3d {
+            width: dimensions.0,
+            height: dimensions.1,
+            depth_or_array_layers: 1,
+        };
+        let diffuse_texture = texture::Texture::from_bytes(&device, &queue, diffuse_bytes, "happy-tree.png").unwrap();
+
+        // A BindGroup describes a set of resources and how they can be accessed by a shader.
+        let texture_bind_group_layout = device.create_bind_group_layout(
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some("Texture Bind Group Layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float {filterable: true},
+                            view_dimension: TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            }
+        );
+        let diffuse_bind_group = device.create_bind_group(
+            &wgpu::BindGroupDescriptor {
+                label: Some("Diffuse Bind Group"),
+                layout: &texture_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&diffuse_texture.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&diffuse_texture.sampler),
+                    }
+                ]
+            }
+        );
+
         let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
         let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Render Pipeline Layout"),
-            bind_group_layouts: &[],
+            bind_group_layouts: &[&texture_bind_group_layout],
             push_constant_ranges: &[],
         });
 
@@ -177,7 +235,9 @@ impl<'window> State<'window> {
             size,
             render_pipeline,
             vertex_buffer,
-            index_buffer
+            index_buffer,
+            diffuse_bind_group,
+            diffuse_texture,
         }
     }
 
@@ -238,6 +298,7 @@ impl<'window> State<'window> {
 
             // different pipelines can get conditionally set in set_pipeline
             render_pass.set_pipeline(&self.render_pipeline);
+            render_pass.set_bind_group(0, &self.diffuse_bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
             render_pass.draw_indexed(0..((self.index_buffer.size() / (std::mem::size_of::<u16>() as u64)) as u32), 0,0..1);
